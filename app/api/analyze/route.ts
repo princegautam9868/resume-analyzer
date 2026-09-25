@@ -43,7 +43,12 @@ export async function POST(req: NextRequest) {
       .replace('{{JD}}', jd.slice(0, 6000));
 
     // Fallback model chain — try each model 2x before moving to the next
-    const MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+    const MODELS = [
+  'gemini-2.5-flash',
+  'gemini-3.5-flash',
+  'gemini-2.5-flash-lite',
+  'gemini-3.5-flash-lite',
+];
     let interaction;
     let lastError;
 
