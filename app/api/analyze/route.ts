@@ -38,39 +38,77 @@ export async function POST(req: NextRequest) {
       );
     }
 
-        const prompt = ATS_PROMPT
+    const prompt = ATS_PROMPT
       .replace('{{RESUME}}', resumeText.slice(0, 12000))
       .replace('{{JD}}', jd.slice(0, 6000));
 
-    // Retry logic for rate limits
+    // Fallback model chain — try each model 2x before moving to the next
+    const MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
     let interaction;
     let lastError;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        interaction = await ai.interactions.create({
-          model: 'gemini-2.5-flash',
-          input: prompt,
-          response_format: {
-            type: 'text',
-            mime_type: 'application/json',
-          },
-        });
-        break; // Success — exit retry loop
-      } catch (err: any) {
-        lastError = err;
-        const errMsg = err.message || '';
-        // If rate limited, wait and retry
-        if (errMsg.includes('429') || errMsg.includes('rate limit')) {
-          console.log(`Rate limited. Retry attempt ${attempt + 1}/3...`);
-          await new Promise((r) => setTimeout(r, 15000)); // wait 15s
-        } else {
-          throw err; // Different error — fail fast
+
+    for (const modelName of MODELS) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          console.log(`Trying model: ${modelName} (attempt ${attempt + 1})`);
+          interaction = await ai.interactions.create({
+            model: modelName,
+            input: prompt,
+            response_format: {
+              type: 'text',
+              mime_type: 'application/json',
+            },
+          });
+          console.log(`✓ Success with model: ${modelName}`);
+          break;
+        } catch (err: any) {
+          lastError = err;
+          const errMsg = err.message || '';
+          console.log(`✗ Model ${modelName} failed: ${errMsg.slice(0, 150)}`);
+
+          if (errMsg.includes('429') || errMsg.includes('rate limit')) {
+            await new Promise((r) => setTimeout(r, 5000));
+          } else {
+            break; // Non-rate-limit error → try next model
+          }
         }
       }
+      if (interaction) break; // Success → stop trying models
     }
 
-        if (!interaction) {
-      throw lastError || new Error('Analysis failed after retries');
+    if (!interaction) {
+      throw lastError || new Error('All Gemini models failed. Please try again in a minute.');
     }
 
     const raw = interaction.output_text || '';
+
+    console.log('=== RESPONSE LENGTH ===', raw.length);
+    console.log('=== RAW RESPONSE (first 500 chars) ===');
+    console.log(raw.slice(0, 500));
+    console.log('=== END RAW ===');
+
+    let cleaned = raw.trim();
+    cleaned = cleaned.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
+
+    let parsed;
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch (parseErr) {
+      const lastBrace = cleaned.lastIndexOf('}');
+      if (lastBrace > 0) {
+        parsed = JSON.parse(cleaned.slice(0, lastBrace + 1));
+      } else {
+        console.error('Raw that failed to parse:', cleaned);
+        throw new Error('AI returned malformed JSON. Please try again.');
+      }
+    }
+
+    return NextResponse.json(parsed);
+  } catch (err: any) {
+    console.error('Analyze error:', err);
+    return NextResponse.json(
+      { error: err.message || 'Analysis failed. Please try again.' },
+      { status: 500 }
+    );
+  }
+}
