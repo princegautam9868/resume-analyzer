@@ -69,7 +69,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    if (!interaction) {
+        if (!interaction) {
       throw lastError || new Error('Analysis failed after retries');
     }
 
