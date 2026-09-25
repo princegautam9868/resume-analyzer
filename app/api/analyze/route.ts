@@ -7,7 +7,8 @@ export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
+  apiKey: process.env.GEMINI_API_KEY || '',
+  vertexai: false,
 });
 
 export async function POST(req: NextRequest) {
@@ -37,48 +38,39 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const prompt = ATS_PROMPT
+        const prompt = ATS_PROMPT
       .replace('{{RESUME}}', resumeText.slice(0, 12000))
       .replace('{{JD}}', jd.slice(0, 6000));
 
-    const interaction = await ai.interactions.create({
-      model: 'gemini-3.8-flash',
-      input: prompt,
-      response_format: {
-        type: 'text',
-        mime_type: 'application/json',
-      },
-    });
-
-    const raw = interaction.output_text || '';
-
-    console.log('=== RESPONSE LENGTH ===', raw.length);
-    console.log('=== RAW RESPONSE (first 500 chars) ===');
-    console.log(raw.slice(0, 500));
-    console.log('=== END RAW ===');
-
-    let cleaned = raw.trim();
-    cleaned = cleaned.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
-
-    let parsed;
-    try {
-      parsed = JSON.parse(cleaned);
-    } catch (parseErr) {
-      const lastBrace = cleaned.lastIndexOf('}');
-      if (lastBrace > 0) {
-        parsed = JSON.parse(cleaned.slice(0, lastBrace + 1));
-      } else {
-        console.error('Raw that failed to parse:', cleaned);
-        throw new Error('AI returned malformed JSON. Please try again.');
+    // Retry logic for rate limits
+    let interaction;
+    let lastError;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        interaction = await ai.interactions.create({
+          model: 'gemini-2.5-flash',
+          input: prompt,
+          response_format: {
+            type: 'text',
+            mime_type: 'application/json',
+          },
+        });
+        break; // Success — exit retry loop
+      } catch (err: any) {
+        lastError = err;
+        const errMsg = err.message || '';
+        // If rate limited, wait and retry
+        if (errMsg.includes('429') || errMsg.includes('rate limit')) {
+          console.log(`Rate limited. Retry attempt ${attempt + 1}/3...`);
+          await new Promise((r) => setTimeout(r, 15000)); // wait 15s
+        } else {
+          throw err; // Different error — fail fast
+        }
       }
     }
 
-    return NextResponse.json(parsed);
-  } catch (err: any) {
-    console.error('Analyze error:', err);
-    return NextResponse.json(
-      { error: err.message || 'Analysis failed. Please try again.' },
-      { status: 500 }
-    );
-  }
-}
+    if (!interaction) {
+      throw lastError || new Error('Analysis failed after retries');
+    }
+
+    const raw = interaction.output_text || '';
